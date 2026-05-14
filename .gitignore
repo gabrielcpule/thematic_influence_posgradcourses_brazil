@@ -1,0 +1,27 @@
+# OpenAlex snapshot data (664 GB — never commit)
+openalex-snapshot/
+env.keys
+
+# DuckDB persistent database and temp files
+checkpoints/openalex_local.duckdb
+checkpoints/duckdb_tmp/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Checkpoints (large data files)
+checkpoints/*.pkl
+checkpoints/*.csv
+
+# Exports
+
+# OS
+.DS_Store
+Thumbs.db
