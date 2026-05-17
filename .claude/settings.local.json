@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -)",
+      "Bash(python -c ' *)",
+      "Bash(python patch_report.py)",
+      "Bash(python patch_hindex.py)",
+      "Bash(xargs ls -lh)",
+      "Bash(zcat \"/workspaces/OpenAlex Complete/openalex-snapshot/data/works/updated_date=2016-06-24/part_0000.gz\")",
+      "Bash(python3 -c \"import sys,json; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0,'/workspaces/OpenAlex Complete/.venv/lib/python3.12/site-packages'\\); import duckdb; print\\('DuckDB version:', duckdb.__version__\\)\")",
+      "Bash(xargs -I{} basename {})",
+      "Bash(sort -k2)",
+      "Bash(python3 -c \"import pyarrow; print\\(pyarrow.__version__\\)\")",
+      "Bash(zcat \"/workspaces/OpenAlex Complete/openalex-snapshot/data/works/updated_date=2026-03-30/part_0000.gz\")",
+      "Bash(zcat \"/workspaces/OpenAlex Complete/openalex-snapshot/data/authors/updated_date=2026-02-01/part_0000.gz\")",
+      "Bash(python3 -c \"import unicodedata; print\\('unicodedata: ok'\\)\")",
+      "Bash(python3 -c \"import re; print\\('re: ok'\\)\")",
+      "Bash(\"/workspaces/OpenAlex Complete/.venv/Scripts/pip.exe\" --version)",
+      "WebFetch(domain:developers.openalex.org)",
+      "Bash(zcat \"openalex-snapshot/data/works/updated_date=2026-03-30/part_0000.gz\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(zcat \"openalex-snapshot/data/authors/updated_date=2026-02-01/part_0000.gz\")",
+      "Bash(ls -t ~/.claude/projects/ | head -20)",
+      "Read(//home/vscode/.claude/projects/**)",
+      "Bash(python3 -)",
+      "Bash(grep -E \"\\\\.txt$\")",
+      "Bash(python3)",
+      "Bash(Remove-Item \"c:\\\\Users\\\\gabri\\\\Documents\\\\OpenAlex Complete\\\\insert_bidi_cell.py\")",
+      "Bash(python patch_duckdb_index.py)"
+    ]
+  }
+}
