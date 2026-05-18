@@ -1,0 +1,83 @@
+# Load API key from env.keys file
+import os
+from pathlib import Path
+
+env_file = Path("env.keys")
+oa_api_key = None
+ID_programa_capes = "1401" # @param {"type":"string","placeholder":"Digite o ID do programa de pós graduação"}
+
+if env_file.exists():
+    with open(env_file) as f:
+        for line in f:
+            if line.startswith("OA_API_KEY="):
+                oa_api_key = line.split("=", 1)[1].strip()
+                break
+
+if not oa_api_key:
+    raise ValueError("OA_API_KEY not found in env.keys file")
+
+# ── Instalação de Dependências e Configurações Gerais ─────────────────────────
+%pip install -q statsmodels>=0.14 scipy>=1.9 pandas>=1.5 numpy>=1.23 matplotlib seaborn duckdb>=1.1 pyopencl pyalex mako ipywidgets pyarrow
+
+import requests
+import pandas as pd
+import numpy as np
+import time
+import json
+import re
+import unicodedata
+import warnings
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+from pathlib import Path
+from itertools import combinations
+from scipy import stats
+import statsmodels.formula.api as smf
+from urllib3.exceptions import InsecureRequestWarning
+import duckdb
+
+# pyalex — used for works and author-details fetching (after DuckDB ID resolution)
+import pyalex
+from pyalex import Authors, Works
+
+warnings.simplefilter('ignore', InsecureRequestWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# --- CAPES API (unchanged) ---
+CAPES_BASE_URL = "https://apigw-proxy.capes.gov.br/observatorio/data/observatorio/producao"
+ID_PROGRAMA = ID_programa_capes
+CAPES_PAGE_SIZE = 100
+
+# --- pyalex global config ---
+pyalex.config.email = "gabrielc.pule@gmail.com"
+pyalex.config.api_key = oa_api_key
+pyalex.config.max_retries = 5
+pyalex.config.retry_backoff_factor = 0.4
+pyalex.config.retry_http_codes = [429, 500, 503]
+
+# Fields we actually need from a Work (select= dramatically reduces payload)
+WORK_SELECT = (
+    "id,display_name,doi,publication_year,cited_by_count,fwci,"
+    "authorships,topics"
+)
+
+# Fields we actually need from an Author record
+AUTHOR_SELECT = (
+    "id,display_name,works_count,cited_by_count,summary_stats,topics,affiliations"
+)
+
+# --- Local OpenAlex snapshot paths (used for author ID resolution only) ---
+SNAPSHOT_BASE = Path("openalex-snapshot/data")
+DUCKDB_PATH   = Path("checkpoints/openalex_local.duckdb")
+DUCKDB_TEMP   = Path("checkpoints/duckdb_tmp")
+DUCKDB_TEMP.mkdir(parents=True, exist_ok=True)
+
+# --- Name normalisation helper for author resolution ---
+def _normalize_name(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[^a-z0-9 ]", " ", s.lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+print("✅ Dependências prontas e ambiente configurado.")

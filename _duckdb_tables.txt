@@ -1,0 +1,224 @@
+# ── Extração de Dados da CAPES e Resolução de Autores (DuckDB local) ─────────
+import pickle
+from pathlib import Path
+
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
+
+# ── DuckDB connection (persistent, shared across all subsequent cells) ────────
+con = duckdb.connect(str(DUCKDB_PATH))
+con.execute("SET threads = 12")
+con.execute("SET memory_limit = '10GB'")
+con.execute(f"SET temp_directory = '{DUCKDB_TEMP.as_posix()}'")
+con.execute("SET enable_progress_bar = true")
+
+_EXISTING_TABLES = set(con.execute("SHOW TABLES").fetchdf()["name"].tolist())
+
+# ── One-time build: author_names (name → OpenAlex ID index) ──────────────────
+if "author_names" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_names (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_names AS
+        SELECT id AS author_id, display_name, display_name_alternatives AS name_alternatives
+        FROM read_ndjson(
+            'openalex-snapshot/data/authors/*/part_*.gz',
+            columns = {
+                'id':                        'VARCHAR',
+                'display_name':              'VARCHAR',
+                'display_name_alternatives': 'VARCHAR[]'
+            },
+            format = 'newline_delimited', compression = 'gzip', ignore_errors = true)
+    """)
+    con.execute("CREATE INDEX idx_author_names_display ON author_names (display_name)")
+    print(f"✅ author_names pronta: {con.execute('SELECT COUNT(*) FROM author_names').fetchone()[0]:,} registros")
+
+# ── One-time build: author_details (full author profiles) ────────────────────
+if "author_details" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_details (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_details AS
+        SELECT
+            id                      AS author_id,
+            display_name,
+            works_count,
+            cited_by_count,
+            summary_stats.h_index   AS h_index,
+            summary_stats.i10_index AS i10_index,
+            topics[1].display_name  AS topic_display_name_1,
+            last_known_institutions[1].id           AS last_known_institution_id,
+            last_known_institutions[1].display_name AS last_known_institution_name,
+            affiliations
+        FROM read_ndjson(
+            'openalex-snapshot/data/authors/*/part_*.gz',
+            columns = {
+                'id':            'VARCHAR',
+                'display_name':  'VARCHAR',
+                'works_count':   'INTEGER',
+                'cited_by_count':'INTEGER',
+                'summary_stats': 'STRUCT(h_index INTEGER, i10_index INTEGER)',
+                'topics':        'STRUCT(id VARCHAR, display_name VARCHAR, score DOUBLE)[]',
+                'last_known_institutions': 'STRUCT(id VARCHAR, display_name VARCHAR, country_code VARCHAR, type VARCHAR)[]',
+                'affiliations':  'STRUCT(institution STRUCT(id VARCHAR, display_name VARCHAR, country_code VARCHAR, type VARCHAR), years INTEGER[])[]'
+            },
+            format = 'newline_delimited', compression = 'gzip', ignore_errors = true)
+    """)
+    con.execute("CREATE INDEX idx_author_details_id ON author_details (author_id)")
+    print(f"✅ author_details pronta: {con.execute('SELECT COUNT(*) FROM author_details').fetchone()[0]:,} registros")
+
+# ── One-time build: author_name_alts_flat (pre-normalized alternatives) ──────
+if "author_name_alts_flat" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_name_alts_flat (~10–15 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_name_alts_flat AS
+        SELECT author_id,
+               lower(regexp_replace(alt, '[^a-zA-Z0-9 ]', ' ', 'g')) AS norm_alt
+        FROM (
+            SELECT author_id, UNNEST(name_alternatives) AS alt
+            FROM author_names
+        )
+        WHERE alt IS NOT NULL AND trim(alt) <> ''
+    """)
+    con.execute("CREATE INDEX idx_author_name_alts_norm ON author_name_alts_flat (norm_alt)")
+    print(f"✅ author_name_alts_flat pronta: "
+          f"{con.execute('SELECT COUNT(*) FROM author_name_alts_flat').fetchone()[0]:,} entradas")
+
+# ── CAPES data download ───────────────────────────────────────────────────────
+def baixar_dados_producao(id_programa):
+    print(f"Verificando id-programa da CAPES: {id_programa}...")
+    try:
+        url_teste = f"{CAPES_BASE_URL}?query=id-programa:({id_programa})&page=0&size=1"
+        response = requests.get(url_teste, verify=False)
+        if not response.json().get('content', response.json()):
+            return None
+    except Exception as e:
+        print(f"Erro CAPES: {e}")
+        return None
+
+    todos_registros = []
+    page = 0
+    while True:
+        url_paginada = f"{CAPES_BASE_URL}?query=id-programa:({id_programa})&page={page}&size={CAPES_PAGE_SIZE}"
+        try:
+            resp = requests.get(url_paginada, verify=False)
+            if resp.status_code != 200: break
+            registros_pagina = resp.json().get('content', resp.json())
+            if not registros_pagina: break
+            todos_registros.extend(registros_pagina)
+            if len(registros_pagina) < CAPES_PAGE_SIZE: break
+            page += 1
+            time.sleep(0.2)
+        except Exception:
+            break
+
+    if todos_registros:
+        df = pd.json_normalize(todos_registros)
+        print(f"Download concluido! Producoes CAPES encontradas: {len(todos_registros)}")
+        return df
+    return None
+
+# --- CAPES checkpoint (JSON para compatibilidade entre versões de pandas) ---
+CKPT_CAPES     = CHECKPOINT_DIR / f"capes_{ID_PROGRAMA}.json"
+CKPT_CAPES_OLD = CHECKPOINT_DIR / f"capes_{ID_PROGRAMA}.pkl"
+
+def _load_capes():
+    if CKPT_CAPES.exists():
+        df = pd.read_json(CKPT_CAPES, orient="records")
+        print(f"✅ CAPES checkpoint carregado: {len(df)} producoes")
+        return df
+    if CKPT_CAPES_OLD.exists():
+        try:
+            import pickle
+            with open(CKPT_CAPES_OLD, "rb") as _f:
+                df = pickle.load(_f)
+            print(f"✅ CAPES pickle carregado: {len(df)} producoes (migrando para JSON…)")
+            df.to_json(CKPT_CAPES, orient="records", force_ascii=False)
+            return df
+        except Exception as e:
+            print(f"⚠️  Pickle corrompido/incompatível ({e}). Re-baixando da CAPES…")
+    df = baixar_dados_producao(ID_PROGRAMA)
+    df.to_json(CKPT_CAPES, orient="records", force_ascii=False)
+    print(f"Checkpoint CAPES salvo: {CKPT_CAPES}")
+    return df
+
+df_resultado = _load_capes()
+NOME_PROGRAMA = (df_resultado["nomePrograma"].dropna().iloc[0].strip()
+                 if "nomePrograma" in df_resultado.columns and
+                    df_resultado["nomePrograma"].notna().any() else "")
+print(f"Programa: {NOME_PROGRAMA}")
+NOME_FACULDADE = (df_resultado["siglaIes"].dropna().iloc[0].strip()
+                  if "siglaIes" in df_resultado.columns and
+                     df_resultado["siglaIes"].notna().any() else "")
+print(f"Faculdade: {NOME_FACULDADE}")
+
+# Extrair autores únicos (sempre derivado de df_resultado)
+df_autores_exploded = df_resultado.explode('autores')
+df_autores_norm = pd.json_normalize(df_autores_exploded['autores'].dropna())
+pesquisadores_unicos = df_autores_norm['nomePessoa'].unique()
+df_pesquisadores = (pd.DataFrame(pesquisadores_unicos, columns=['nomePessoa'])
+                    .sort_values('nomePessoa').reset_index(drop=True))
+print(f"Pesquisadores unicos CAPES encontrados: {len(df_pesquisadores)}")
+
+# ── Author name → OpenAlex ID resolution (DuckDB) ────────────────────────────
+CKPT_FILTERED_AUTHORS = CHECKPOINT_DIR / f"filtered_authors_{ID_PROGRAMA}.csv"
+if CKPT_FILTERED_AUTHORS.exists():
+    df_filtered_authors = pd.read_csv(CKPT_FILTERED_AUTHORS)
+    before = len(df_filtered_authors)
+    df_filtered_authors = (df_filtered_authors
+                           .drop_duplicates(subset=['open_alex_id'])
+                           .reset_index(drop=True))
+    if before > len(df_filtered_authors):
+        print(f"  {before - len(df_filtered_authors)} IDs duplicados removidos do checkpoint")
+    print(f"✅ Author ID checkpoint carregado: {len(df_filtered_authors)} IDs validos")
+else:
+    names = df_pesquisadores['nomePessoa'].tolist()
+    total = len(names)
+
+    def _resolve_duckdb(name: str):
+        norm = _normalize_name(name)
+        # Step 1: exact normalized match on display_name
+        row = con.execute("""
+            SELECT author_id FROM author_names
+            WHERE lower(regexp_replace(display_name, '[^a-zA-Z0-9 ]', ' ', 'g')) = ?
+            LIMIT 1
+        """, [norm]).fetchone()
+        if row:
+            return row[0]
+        # Step 2: indexed lookup in pre-normalized alternatives table
+        row = con.execute("""
+            SELECT author_id FROM author_name_alts_flat
+            WHERE norm_alt = ?
+            LIMIT 1
+        """, [norm]).fetchone()
+        if row:
+            return row[0]
+        # Step 3: surname-first transposition (e.g. "CARDOSO, PEDRO A." → "PEDRO A. CARDOSO")
+        if ',' in name:
+            parts = name.split(',', 1)
+            transposed = _normalize_name(f"{parts[1].strip()} {parts[0].strip()}")
+            row = con.execute("""
+                SELECT author_id FROM author_names
+                WHERE lower(regexp_replace(display_name, '[^a-zA-Z0-9 ]', ' ', 'g')) = ?
+                LIMIT 1
+            """, [transposed]).fetchone()
+            if row:
+                return row[0]
+        return None
+
+    print(f"Iniciando resolução de {total} autores no OpenAlex via DuckDB…")
+    ids_map = {}
+    for i, name in enumerate(names, 1):
+        ids_map[name] = _resolve_duckdb(name)
+        if i % 50 == 0 or i == total:
+            found = sum(1 for v in ids_map.values() if v is not None)
+            print(f"  {i}/{total} processados — {found} IDs encontrados ate agora")
+
+    ids = [ids_map[n] for n in names]
+    df_pesquisadores['open_alex_id'] = ids
+    df_filtered_authors = (df_pesquisadores
+                           .dropna(subset=['open_alex_id'])
+                           .drop_duplicates(subset=['open_alex_id'])
+                           .reset_index(drop=True))
+    df_filtered_authors.to_csv(CKPT_FILTERED_AUTHORS, index=False)
+    print(f"Checkpoint de IDs salvo: {CKPT_FILTERED_AUTHORS}")
+
+print(f"✅ Encontrados {len(df_filtered_authors)} IDs validos do OpenAlex.")

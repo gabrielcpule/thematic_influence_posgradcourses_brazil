@@ -28,7 +28,8 @@
       "Bash(grep -E \"\\\\.txt$\")",
       "Bash(python3)",
       "Bash(Remove-Item \"c:\\\\Users\\\\gabri\\\\Documents\\\\OpenAlex Complete\\\\insert_bidi_cell.py\")",
-      "Bash(python patch_duckdb_index.py)"
+      "Bash(python patch_duckdb_index.py)",
+      "Bash(python)"
     ]
   }
 }

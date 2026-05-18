@@ -1,0 +1,269 @@
+
+============================================================
+AUTHOR_NAMES_TABLE: Found in 2 cell(s)
+============================================================
+
+CELL 5:
+# ── Extração de Dados da CAPES e Resolução de Autores (DuckDB local) ─────────
+import pickle
+from pathlib import Path
+
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
+
+# ── DuckDB connection (persistent, shared across all subsequent cells) ────────
+con = duckdb.connect(str(DUCKDB_PATH))
+con.execute("SET threads = 12")
+con.execute("SET memory_limit = '10GB'")
+con.execute(f"SET temp_directory = '{DUCKDB_TEMP.as_posix()}'")
+con.execute("SET enable_progress_bar = true")
+
+_EXISTING_TABLES = set(con.execute("SHOW TABLES").fetchdf()["name"].tolist())
+
+# ── One-time build: author_names (name → OpenAlex ID index) ──────────────────
+if "author_names" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_names (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_names AS
+        SELECT id AS author_id, display_name, display_name_alternatives AS name_alternatives
+        FROM read_ndjson(
+            'openalex-snapshot/data/authors/*/part_*.gz',
+            columns = {
+                'id':                        'VARCHAR',
+                'display_name':              'VARCHAR',
+                'display_name_alternatives': 'VARCHAR[]'
+            },
+            format = 'newline_delimited', compression = 'gzip', ignore_errors = true)
+    """)
+    con.execute("CREATE INDEX idx_author_names_display ON author_names (display_name)")
+    print(f"✅ author_names pronta: {con.execute('SELECT COUNT(*) FROM author_names').fetchone()[0]:,} registros")
+
+# ── One-time build: author_details (full author profiles) ────────────────────
+if "author_details" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_details (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_details AS
+        SELECT
+            id                      AS author_id,
+            display_name,
+            works_count,
+            cited_by_count,
+            summary_stats.h_index   AS h_index,
+            summary_stats.i10_inde
+
+
+CELL 7:
+# ── Busca Compreensiva de Obras e Detalhamento de Autores (pyalex) ────────────
+CKPT_WORKS          = CHECKPOINT_DIR / f"works_{ID_PROGRAMA}.csv"
+CKPT_RELS           = CHECKPOINT_DIR / f"rels_{ID_PROGRAMA}.csv"
+CKPT_AUTHOR_DETAILS = CHECKPOINT_DIR / f"author_details_{ID_PROGRAMA}.csv"
+
+# Schemas — used to invalidate stale checkpoints when columns change
+_RELS_REQUIRED_COLS    = {"institution_id", "institution_display_name"}
+_AUTHORS_REQUIRED_COLS = {"last_institution_id", "last_institution_display_name",
+                          "last_affiliation_year", "affiliations_json", "i10_index",
+                          "author_topics_json"}
+
+# --- Works + Relations checkpoint ---
+_rels_stale = (CKPT_RELS.exists()
+               and bool(_RELS_REQUIRED_COLS - set(pd.read_csv(CKPT_RELS, nrows=0).columns)))
+if _rels_stale:
+    print("⚠️  Checkpoint de relações desatualizado (faltam colunas de instituição). Refazendo fetch…")
+
+if CKPT_WORKS.exists() and CKPT_RELS.exists() and not _rels_stale:
+    df_works = pd.read_csv(CKPT_WORKS)
+    df_rels  = pd.read_csv(CKPT_RELS)
+    df_rels  = df_rels.dropna(subset=["work_id", "publication_year"])
+    df_rels["publication_year"] = df_rels["publication_year"].astype(int)
+    print(f"✅ Works checkpoint carregado: {len(df_works)} obras, {len(df_rels)} relações")
+else:
+    author_ids_clean = [url.split('/')[-1] for url in df_filtered_authors['open_alex_id']]
+    all_works_data = []
+    AUTHOR_BATCH = 50
+
+    print("⌛ Buscando obras detalhadas no OpenAlex via pyalex (cursor, per_page=200)…")
+    for i in range(0, len(author_ids_clean), AUTHOR_BATCH):
+        batch = author_ids_clean[i:i + AUTHOR_BATCH]
+        author_filter = "|".join(batch)
+        for page in (Works()
+                     .filter(author={"id": author_filter},
+                             has_doi=True,
+                             is_retracted=False,
+                             publication_year=">1990")
+                     .select(WORK_SELECT)
+                     .pagin
+
+
+============================================================
+NORMALIZE_NAME: Found in 2 cell(s)
+============================================================
+
+CELL 3:
+# Load API key from env.keys file
+import os
+from pathlib import Path
+
+env_file = Path("env.keys")
+oa_api_key = None
+ID_programa_capes = "1401" # @param {"type":"string","placeholder":"Digite o ID do programa de pós graduação"}
+
+if env_file.exists():
+    with open(env_file) as f:
+        for line in f:
+            if line.startswith("OA_API_KEY="):
+                oa_api_key = line.split("=", 1)[1].strip()
+                break
+
+if not oa_api_key:
+    raise ValueError("OA_API_KEY not found in env.keys file")
+
+# ── Instalação de Dependências e Configurações Gerais ─────────────────────────
+%pip install -q statsmodels>=0.14 scipy>=1.9 pandas>=1.5 numpy>=1.23 matplotlib seaborn duckdb>=1.1 pyopencl pyalex mako ipywidgets pyarrow
+
+import requests
+import pandas as pd
+import numpy as np
+import time
+import json
+import re
+import unicodedata
+import warnings
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import seaborn as sns
+from pathlib import Path
+from itertools import combinations
+from scipy import stats
+import statsmodels.formula.api as smf
+from urllib3.exceptions import InsecureRequestWarning
+import duckdb
+
+# pyalex — used for works and author-details fetching (after DuckDB ID resolution)
+import pyalex
+from pyalex import Authors, Works
+
+warnings.simplefilter('ignore', InsecureRequestWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# --- CAPES API (unchanged) ---
+CAPES_BASE_URL = "https://apigw-proxy.capes.gov.br/observatorio/data/observatorio/producao"
+ID_PROGRAMA = ID_programa_capes
+CAPES_PAGE_SIZE = 100
+
+# --- pyalex global config ---
+pyalex.config.email = "gabrielc.pule@gmail.com"
+pyalex.config.api_key = oa_api_key
+pyalex.config.max_retries = 5
+pyalex.config.retry_backoff_factor = 0.4
+pyalex.config.retry_http_codes = [429, 500, 503]
+
+# Fields we actually need from a Work (select= dramatically reduces payload)
+WORK_SELECT = (
+    "id,display_name,doi,publication_year,cited_by_count,fwci,"
+    "authorships,topics"
+)
+
+# Fields we
+
+
+CELL 5:
+# ── Extração de Dados da CAPES e Resolução de Autores (DuckDB local) ─────────
+import pickle
+from pathlib import Path
+
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
+
+# ── DuckDB connection (persistent, shared across all subsequent cells) ────────
+con = duckdb.connect(str(DUCKDB_PATH))
+con.execute("SET threads = 12")
+con.execute("SET memory_limit = '10GB'")
+con.execute(f"SET temp_directory = '{DUCKDB_TEMP.as_posix()}'")
+con.execute("SET enable_progress_bar = true")
+
+_EXISTING_TABLES = set(con.execute("SHOW TABLES").fetchdf()["name"].tolist())
+
+# ── One-time build: author_names (name → OpenAlex ID index) ──────────────────
+if "author_names" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_names (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_names AS
+        SELECT id AS author_id, display_name, display_name_alternatives AS name_alternatives
+        FROM read_ndjson(
+            'openalex-snapshot/data/authors/*/part_*.gz',
+            columns = {
+                'id':                        'VARCHAR',
+                'display_name':              'VARCHAR',
+                'display_name_alternatives': 'VARCHAR[]'
+            },
+            format = 'newline_delimited', compression = 'gzip', ignore_errors = true)
+    """)
+    con.execute("CREATE INDEX idx_author_names_display ON author_names (display_name)")
+    print(f"✅ author_names pronta: {con.execute('SELECT COUNT(*) FROM author_names').fetchone()[0]:,} registros")
+
+# ── One-time build: author_details (full author profiles) ────────────────────
+if "author_details" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_details (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_details AS
+        SELECT
+            id                      AS author_id,
+            display_name,
+            works_count,
+            cited_by_count,
+            summary_stats.h_index   AS h_index,
+            summary_stats.i10_inde
+
+
+============================================================
+RESOLVE_DUCKDB: Found in 1 cell(s)
+============================================================
+
+CELL 5:
+# ── Extração de Dados da CAPES e Resolução de Autores (DuckDB local) ─────────
+import pickle
+from pathlib import Path
+
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
+
+# ── DuckDB connection (persistent, shared across all subsequent cells) ────────
+con = duckdb.connect(str(DUCKDB_PATH))
+con.execute("SET threads = 12")
+con.execute("SET memory_limit = '10GB'")
+con.execute(f"SET temp_directory = '{DUCKDB_TEMP.as_posix()}'")
+con.execute("SET enable_progress_bar = true")
+
+_EXISTING_TABLES = set(con.execute("SHOW TABLES").fetchdf()["name"].tolist())
+
+# ── One-time build: author_names (name → OpenAlex ID index) ──────────────────
+if "author_names" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_names (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_names AS
+        SELECT id AS author_id, display_name, display_name_alternatives AS name_alternatives
+        FROM read_ndjson(
+            'openalex-snapshot/data/authors/*/part_*.gz',
+            columns = {
+                'id':                        'VARCHAR',
+                'display_name':              'VARCHAR',
+                'display_name_alternatives': 'VARCHAR[]'
+            },
+            format = 'newline_delimited', compression = 'gzip', ignore_errors = true)
+    """)
+    con.execute("CREATE INDEX idx_author_names_display ON author_names (display_name)")
+    print(f"✅ author_names pronta: {con.execute('SELECT COUNT(*) FROM author_names').fetchone()[0]:,} registros")
+
+# ── One-time build: author_details (full author profiles) ────────────────────
+if "author_details" not in _EXISTING_TABLES:
+    print("⌛ Construindo tabela author_details (~6–8 min, uma única vez)…")
+    con.execute("""
+        CREATE TABLE author_details AS
+        SELECT
+            id                      AS author_id,
+            display_name,
+            works_count,
+            cited_by_count,
+            summary_stats.h_index   AS h_index,
+            summary_stats.i10_inde
+
